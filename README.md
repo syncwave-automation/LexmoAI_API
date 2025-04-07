@@ -27,9 +27,11 @@ LexmoAI_API/
 │   └── routers/                
 │   │   ├── admin.py         # Admin-only routes
 │   │   ├── chat.py          # Secure chat routes
+│   │   ├── chat_stream.py   # Secure chat streaming routes
 │   │   ├── public.py        # Public API routes
 │   │   └── secure.py        # Secure user routes
-│   └── services/                
+│   └── services/  
+│       ├── Lexmo_chat_stream.py   # Main Lexmo Chat Streaming
 │       └── Lexmo_chat.py    # Main Lexmo Chat 
 ├── scripts/                 
 │   ├── create_api_key.py    # Create API key
@@ -66,7 +68,11 @@ pip install -r requirements.txt
 ```
 
 Run the server:
-
+Create .env file and inside that:
+```bash
+export OPENAI_API_KEY="Your API Key"
+```
+Then:
 ```bash
 uvicorn main:app --reload
 ```
@@ -118,6 +124,7 @@ curl -X GET http://127.0.0.1:8000/api/v1/secure/ \
 ```
 
 ### Chat Endpoint  
+#### Chat response
 **Route**: `GET /api/v1/secure/chat`  
 Requires a valid API key in the `X-API-Key` header.
 
@@ -159,6 +166,23 @@ curl -X POST "http://127.0.0.1:8000/api/v1/secure/chat" \
 **Unauthorized Response**:
 ```json
 {"detail":"Invalid or inactive API key"}
+```
+#### Chat rsponse streaming
+
+**Route**: `WS /api/v1/secure/chat_stream`  
+
+***Testing***
+
+To test locally, you could use a tool like wscat:
+```bash
+npm install -g wscat
+
+wscat -c "ws://127.0.0.1:8000/api/v1/secure/chat_stream?api_key=YOUR_VALID_KEY"
+```
+Then:
+```bash
+> { "query": "Your Query" }
+
 ```
 
 ---
