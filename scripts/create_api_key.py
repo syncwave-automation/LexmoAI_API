@@ -31,7 +31,7 @@ def create_api_key(owner="Unknown", role="user"):
 if __name__ == "__main__":
     init_db()
 
-    owner_arg = sys.argv[1] if len(sys.argv) > 1 else "Unknown"
-    role_arg = sys.argv[2] if len(sys.argv) > 2 else "user"
+    owner_arg = sys.argv[1] if len(sys.argv) > 1 else "Admin"
+    role_arg = sys.argv[2] if len(sys.argv) > 2 else "admin"
 
     create_api_key(owner=owner_arg, role=role_arg)

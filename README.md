@@ -74,7 +74,7 @@ export OPENAI_API_KEY="Your API Key"
 ```
 Then:
 ```bash
-uvicorn app.main:app --reload
+uvicorn app.`main:app --reload
 ```
 
 ---
@@ -87,6 +87,11 @@ No API key required.
 
 ```bash
 curl -X GET http://127.0.0.1:8000/api/v1/public/
+```
+###### Or 
+
+```bash
+curl -X GET https://api.lexmo.in/api/v1/public/
 ```
 **Success Response**:
 ```json
@@ -105,6 +110,12 @@ Requires a valid API key in the `X-API-Key` header.
 curl -X GET http://127.0.0.1:8000/api/v1/secure/ \
   -H "X-API-Key: your_user_api_key_here"
 ```
+###### Or 
+```bash
+curl -X GET https://api.lexmo.in/api/v1/secure/ \
+  -H "X-API-Key: your_user_api_key_here"
+```
+
 
 **Success Response**:
 ```json
@@ -130,6 +141,14 @@ Requires a valid API key in the `X-API-Key` header.
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/api/v1/secure/chat" \
+     -H "Content-Type: application/json" \
+     -H "X-API-Key: <VALID_USER_KEY>" \
+     -d '{"query": "Your legal question here"}'
+
+```
+###### Or 
+```bash
+curl -X POST "https://api.lexmo.in/api/v1/secure/chat" \
      -H "Content-Type: application/json" \
      -H "X-API-Key: <VALID_USER_KEY>" \
      -d '{"query": "Your legal question here"}'
@@ -176,9 +195,15 @@ curl -X POST "http://127.0.0.1:8000/api/v1/secure/chat" \
 To test locally, you could use a tool like wscat:
 ```bash
 npm install -g wscat
-
+```
+```bash
 wscat -c "ws://127.0.0.1:8000/api/v1/secure/chat_stream?api_key=YOUR_VALID_KEY"
 ```
+###### Or 
+```bash
+wscat -c "https://api.lexmo.in/api/v1/secure/chat_stream?api_key=YOUR_VALID_KEY"
+```
+
 Then:
 ```bash
 > { "query": "Your Query" }
@@ -195,6 +220,13 @@ Requires an admin API key.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/admin/create_key \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your_admin_api_key_here" \
+  -d '{"owner":"TestUser","role":"user/admin"}'
+```
+###### Or 
+```bash
+curl -X GET https://api.lexmo.in/api/v1/admin/create_key\
   -H "Content-Type: application/json" \
   -H "X-API-Key: your_admin_api_key_here" \
   -d '{"owner":"TestUser","role":"user/admin"}'
@@ -219,6 +251,11 @@ Requires an admin API key.
 ```bash
 curl -H "X-API-Key: your_admin_api_key_here" \
   http://127.0.0.1:8000/api/v1/admin/list_keys/
+```
+###### Or 
+```bash
+curl -X GET https://api.lexmo.in/api/v1/admin/list_keys/ \
+  -H "X-API-Key: your_user_api_key_here"
 ```
 
 **Response**:
@@ -245,6 +282,11 @@ Requires an admin API key.
 ```bash
 curl -X DELETE http://127.0.0.1:8000/api/v1/admin/delete_key/TestUser \
   -H "X-API-Key: your_admin_api_key_here"
+```
+###### Or 
+```bash
+curl -X GET https://api.lexmo.in/api/v1/admin/delete_key/TestUser \
+  -H "X-API-Key: your_user_api_key_here"
 ```
 
 **Success Response**:
