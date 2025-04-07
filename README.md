@@ -74,7 +74,7 @@ export OPENAI_API_KEY="Your API Key"
 ```
 Then:
 ```bash
-uvicorn main:app --reload
+uvicorn app.main:app --reload
 ```
 
 ---
