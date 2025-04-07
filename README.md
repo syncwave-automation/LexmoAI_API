@@ -25,9 +25,12 @@ LexmoAI_API/
 │   ├── db.py                # Database connection and models, using SQLite
 │   ├── auth.py              # Authentication logic
 │   └── routers/                
-│       ├── admin.py         # Admin-only routes
-│       ├── public.py        # Public API routes
-│       └── secure.py        # Secure user routes
+│   │   ├── admin.py         # Admin-only routes
+│   │   ├── chat.py          # Secure chat routes
+│   │   ├── public.py        # Public API routes
+│   │   └── secure.py        # Secure user routes
+│   └── services/                
+│       └── Lexmo_chat.py    # Main Lexmo Chat 
 ├── scripts/                 
 │   ├── create_api_key.py    # Create API key
 │   └── list_keys.py         # List all API Keys
@@ -107,6 +110,50 @@ curl -X GET http://127.0.0.1:8000/api/v1/secure/ \
     "role": "user"
   }
 }
+```
+
+**Unauthorized Response**:
+```json
+{"detail":"Invalid or inactive API key"}
+```
+
+### Chat Endpoint  
+**Route**: `GET /api/v1/secure/chat`  
+Requires a valid API key in the `X-API-Key` header.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/secure/chat" \
+     -H "Content-Type: application/json" \
+     -H "X-API-Key: <VALID_USER_KEY>" \
+     -d '{"query": "Your legal question here"}'
+
+```
+
+**Success Response**:
+```json
+{
+  "retrieved_files": [
+    {
+      "store_name": "State_Acts",
+      "filename": "SomeAct.pdf",
+      "content": [
+        "... text snippet ...",
+        "... more text snippet ..."
+      ],
+      "score": 0.89
+    },
+    {
+      "store_name": "Union_Acts",
+      "filename": "SomeOtherAct.pdf",
+      "content": [
+        "... text snippet ..."
+      ],
+      "score": 0.78
+    }
+  ],
+  "final_answer": "Hello, I'm Lexmo. Here's the best possible legal advice..."
+}
+
 ```
 
 **Unauthorized Response**:
