@@ -4,7 +4,13 @@ from fastapi import APIRouter, Depends, Request
 from ..auth import get_user
 from ..limiter import limiter
 
+# Import the chat router we just wrote
+from .chat import router as chat_router
+
 router = APIRouter()
+
+# You can mount the chat router to keep everything under /api/v1/secure/chat
+router.include_router(chat_router)
 
 @router.get("/")
 @limiter.limit("2/minute")  # route-level override
@@ -16,3 +22,4 @@ def secure_route(request: Request, user: dict = Depends(get_user)):
         "message": "You have accessed a protected endpoint!",
         "user": user
     }
+

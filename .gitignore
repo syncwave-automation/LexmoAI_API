@@ -11,3 +11,7 @@ api_keys.db
 
 *.pyc
 __pycache__/
+
+.env/
+*.env
+*.env.*

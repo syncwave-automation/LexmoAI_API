@@ -4,3 +4,5 @@ passlib[bcrypt]
 bcrypt==4.0.1
 sqlalchemy
 slowapi
+openai
+dotenv
