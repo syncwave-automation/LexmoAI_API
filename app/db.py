@@ -10,7 +10,7 @@ from passlib.hash import bcrypt
 DATABASE_URL = "sqlite:///./api_keys.db"
 
 engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False}, echo=False
+    DATABASE_URL, connect_args={"check_same_thread": False}, echo=False, pool_size=2000, max_overflow=1000
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
