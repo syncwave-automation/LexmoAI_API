@@ -138,6 +138,7 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
             continue
 
         user_query = data["query"]
+        await websocket.send_text("[START_STREAM]")
 
         # 3) Do retrieval
         search_results = do_retrieval(user_query)
@@ -152,13 +153,22 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
                 "content": text_snippets,
                 "score": score
             })
+            
+        await websocket.send_text("[RETRIEVED_FILES_START]")
 
         # 5) Send the retrieved_files as JSON
         await websocket.send_json({"retrieved_files": retrieved_info})
+        await websocket.send_text("[RETRIEVED_FILES_END]")
+        
+        await websocket.send_text("[COMBINED_SUMMARY_START]")
 
         # 6) Now generate the final answer in streaming mode
         combined_knowledge = generate_combined_summary(search_results, user_query, CHUNK_SIZE)
         raw_data_text = format_raw_retrieved_data(search_results)
+        
+        await websocket.send_text(combined_knowledge)
+
+        await websocket.send_text("[COMBINED_SUMMARY_END]")
 
         # Instead of capturing the entire response, we'll forward each chunk as we get it:
         # We'll intercept the `client.chat.completions.create(..., stream=True)` calls
@@ -180,12 +190,15 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
         )
 
         # 7) Send each chunk as text frames
-        await websocket.send_text("[START_STREAM]")
+        await websocket.send_text("[START_RESPONSE_STREAM]")
         for chunk in response:
             content_piece = chunk.choices[0].delta.content
             if content_piece:
             # Only send if it's a non-empty string
                 await websocket.send_text(content_piece)
+        
+        await websocket.send_text("[END_RESPONSE_STREAM]")
+
         await websocket.send_text("[END_STREAM]")
 
         # 8) Close or keep open if you want to allow multiple queries in one socket

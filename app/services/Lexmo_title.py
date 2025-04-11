@@ -20,7 +20,6 @@ def generate_chat_title(user_query: str, max_tokens: int = None) -> str:
       - str: The generated chat title.
     """
     
-    context = "Earlier the user discussed issues related to contract disputes and remedies available under the Indian Contract Act."
 
     
     # Construct the prompt to guide title generation
@@ -29,7 +28,6 @@ def generate_chat_title(user_query: str, max_tokens: int = None) -> str:
         "Your task is to generate a concise, descriptive title for a chat session based on the inputs provided. "
         "The title should accurately summarize the legal issue or inquiry without any extraneous detail.\n\n"
         "User Query: " + user_query + "\n\n"
-        "Context: " + context + "\n\n"
         # "Relevant Knowledge: " + knowledge + "\n\n"
         "Generate a short title (maximum " + str(max_tokens) + " tokens) that captures the essence of the conversation."
     )
