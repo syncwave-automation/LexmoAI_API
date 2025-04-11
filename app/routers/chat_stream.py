@@ -155,16 +155,16 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
                 "score": score
             })
             
-        await websocket.send_text("[RETRIEVED_FILES_START]")
+        await websocket.send_text("[START_RAW_FILES]")
         await asyncio.sleep(0)  # Optional delay for better UX
         # 5) Send the retrieved_files as JSON
         await websocket.send_json({"retrieved_files": retrieved_info})
         await asyncio.sleep(0)  # Optional delay for better UX
 
-        await websocket.send_text("[RETRIEVED_FILES_END]")
+        await websocket.send_text("[END_RAW_FILES]")
         await asyncio.sleep(0)
         
-        await websocket.send_text("[COMBINED_SUMMARY_START]")
+        await websocket.send_text("[START_PROCESSED_DATA]")
         await asyncio.sleep(0)
         # 6) Now generate the final answer in streaming mode
         combined_knowledge = generate_combined_summary(search_results, user_query, CHUNK_SIZE)
@@ -174,7 +174,7 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
 
         await asyncio.sleep(0)
         
-        await websocket.send_text("[COMBINED_SUMMARY_END]")
+        await websocket.send_text("[END_PROCESSED_DATA]")
         await asyncio.sleep(0)
         # Instead of capturing the entire response, we'll forward each chunk as we get it:
         # We'll intercept the `client.chat.completions.create(..., stream=True)` calls
