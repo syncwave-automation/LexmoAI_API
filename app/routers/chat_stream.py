@@ -1,5 +1,6 @@
 # app/routers/chat_stream.py
 
+import asyncio
 import concurrent.futures
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Depends
 from typing import Optional
@@ -155,21 +156,26 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
             })
             
         await websocket.send_text("[RETRIEVED_FILES_START]")
-
+        await asyncio.sleep(0)  # Optional delay for better UX
         # 5) Send the retrieved_files as JSON
         await websocket.send_json({"retrieved_files": retrieved_info})
+        await asyncio.sleep(0)  # Optional delay for better UX
+
         await websocket.send_text("[RETRIEVED_FILES_END]")
+        await asyncio.sleep(0)
         
         await websocket.send_text("[COMBINED_SUMMARY_START]")
-
+        await asyncio.sleep(0)
         # 6) Now generate the final answer in streaming mode
         combined_knowledge = generate_combined_summary(search_results, user_query, CHUNK_SIZE)
         raw_data_text = format_raw_retrieved_data(search_results)
         
         await websocket.send_text(combined_knowledge)
 
+        await asyncio.sleep(0)
+        
         await websocket.send_text("[COMBINED_SUMMARY_END]")
-
+        await asyncio.sleep(0)
         # Instead of capturing the entire response, we'll forward each chunk as we get it:
         # We'll intercept the `client.chat.completions.create(..., stream=True)` calls
         # inside generate_final_response. That function prints to stdout now,
@@ -196,6 +202,7 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
             if content_piece:
             # Only send if it's a non-empty string
                 await websocket.send_text(content_piece)
+                await asyncio.sleep(0)
         
         await websocket.send_text("[END_RESPONSE_STREAM]")
 
