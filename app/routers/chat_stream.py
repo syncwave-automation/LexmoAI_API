@@ -70,7 +70,7 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
       3) Runs vector store retrieval and sends a JSON with "retrieved_files".
       4) Streams the final LLM answer token-by-token over the WebSocket.
     """
-
+    current_response_id = None
     # Accept the websocket connection
     await websocket.accept()
 
@@ -239,10 +239,11 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
         final_prompt = build_final_prompt(user_query, combined_knowledge, raw_data_text)
         # Now stream from openai
 
-        response = openai.chat.completions.create(
+        response = openai.responses.create(
             model="gpt-4o-mini",
-            messages=final_prompt,
-            stream=True
+            input=final_prompt,
+            stream=True,
+            previous_response_id=current_response_id
         )
         
         start_textual_response = {
@@ -254,17 +255,24 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
         # 7) Send each chunk as text frames
         await websocket.send_json(start_textual_response)
         for chunk in response:
-            content_piece = chunk.choices[0].delta.content
-            response_data = {
-                "event": "response_frame", 
-                "chat_session_id": chat_session_id,
-                "message_id": message_id,
-                "data": content_piece
-            }
-            if content_piece:
-            # Only send if it's a non-empty string
-                await websocket.send_json(response_data)
-                await asyncio.sleep(0)
+            if chunk.type == "response.created":
+            # `chunk.delta` should contain the piece of text
+                # print(chunk.response.id, end='', flush=True)
+                current_response_id = chunk.response.id
+            # Look for the streaming text events
+            if chunk.type == "response.output_text.delta":
+                # `chunk.delta` should contain the piece of text
+                content_piece = chunk.delta
+                response_data = {
+                    "event": "response_frame", 
+                    "chat_session_id": chat_session_id,
+                    "message_id": message_id,
+                    "data": content_piece
+                }
+                if content_piece:
+                # Only send if it's a non-empty string
+                    await websocket.send_json(response_data)
+                    await asyncio.sleep(0)
         
         
         end_textual_response = {
