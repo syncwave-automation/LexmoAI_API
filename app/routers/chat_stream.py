@@ -22,42 +22,6 @@ RELEVANCE_SCORE_THRESHOLD = 0.2
 MAX_RESULTS = 4
 CHUNK_SIZE = 7000
 
-# We’ll define a helper to do the retrieval (basically the same logic from chat.py).
-def do_retrieval(query: str):
-    search_results = []
-    seen_lengths = set()
-
-    def parallel_search(name, store_id, q, max_results):
-        return search_vector_store(name, store_id, q, max_results)
-
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future_map = {
-            executor.submit(parallel_search, store_name, store_id, query, MAX_RESULTS): store_name
-            for store_name, store_id in VECTOR_STORES.items()
-        }
-
-        for fut in concurrent.futures.as_completed(future_map):
-            store_name = future_map[fut]
-            try:
-                store_name, results_data = fut.result()
-            except Exception:
-                continue
-
-            filtered_data = [item for item in results_data if item.score >= RELEVANCE_SCORE_THRESHOLD]
-
-            for result in filtered_data:
-                content_length = len(result.content[0].text)
-                if content_length not in seen_lengths:
-                    seen_lengths.add(content_length)
-                    search_results.append([
-                        result.score,
-                        store_name,
-                        result.filename,
-                        result.content
-                    ])
-
-    return search_results
-
 # --------------  API KEY AUTH FOR WEBSOCKET ---------------------------
 # Because websockets don’t support normal FastAPI dependencies (like `Depends(get_user)`)
 # out of the box, we need a custom handshake approach.
@@ -87,6 +51,11 @@ def verify_api_key(raw_key: Optional[str]) -> bool:
     finally:
         db.close()
     return False
+
+# --------------  HELPER: Directly perform retrieval and send each result ---------------------------
+def parallel_search(name, store_id, q, max_results):
+    return search_vector_store(name, store_id, q, max_results)
+
 
 # --------------  THE WEBSOCKET ROUTE  ---------------------------
 router = APIRouter()
@@ -118,7 +87,7 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
             print("Client disconnected.")
             break
         
-        except:
+        except Exception:
         # If the client forcibly closed or sent invalid JSON, break or handle as needed
             await websocket.send_json({"error": "Invalid message format"})
             continue
@@ -140,26 +109,53 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
 
         user_query = data["query"]
         await websocket.send_text("[START_STREAM]")
-
-        # 3) Do retrieval
-        search_results = do_retrieval(user_query)
-
-        # 4) Build the "retrieved_files" structure
-        retrieved_info = []
-        for (score, store_name, filename, content_obj) in search_results:
-            text_snippets = [seg.text for seg in content_obj]
-            retrieved_info.append({
-                "store_name": store_name,
-                "filename": filename,
-                "content": text_snippets,
-                "score": score
-            })
-            
+        await asyncio.sleep(0)
         await websocket.send_text("[START_RAW_FILES]")
-        await asyncio.sleep(0)  # Optional delay for better UX
-        # 5) Send the retrieved_files as JSON
-        await websocket.send_json({"retrieved_files": retrieved_info})
-        await asyncio.sleep(0)  # Optional delay for better UX
+        await asyncio.sleep(0)  
+
+# ---- Retrieval Phase: send each retrieved file as soon as available ----
+        retrieved_results = []  # Will hold raw results for later use in combined summary
+        seen_lengths = set()
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_map = {
+                executor.submit(parallel_search, store_name, store_id, user_query, MAX_RESULTS): store_name
+                for store_name, store_id in VECTOR_STORES.items()
+            }
+
+            # As soon as each future completes, process its results immediately.
+            for fut in concurrent.futures.as_completed(future_map):
+                store_name = future_map[fut]
+                try:
+                    store_name, results_data = fut.result()
+                except Exception:
+                    continue
+
+                filtered_data = [item for item in results_data if item.score >= RELEVANCE_SCORE_THRESHOLD]
+
+                for result in filtered_data:
+                    content_length = len(result.content[0].text)
+                    if content_length in seen_lengths:
+                        continue
+                    seen_lengths.add(content_length)
+                    # Save the raw result (keep the same format as before)
+                    retrieved_results.append([
+                        result.score,
+                        store_name,
+                        result.filename,
+                        result.content
+                    ])
+                    # Build a JSON friendly structure for this retrieved file
+                    item = {
+                        "store_name": store_name,
+                        "filename": result.filename,
+                        "content": [seg.text for seg in result.content],
+                        "score": result.score
+                    }
+                    # Send each retrieved file immediately as JSON
+                    await websocket.send_json({"retrieved_file": item})
+                    await asyncio.sleep(0)
+                    
+
 
         await websocket.send_text("[END_RAW_FILES]")
         await asyncio.sleep(0)
@@ -167,8 +163,8 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
         await websocket.send_text("[START_PROCESSED_DATA]")
         await asyncio.sleep(0)
         # 6) Now generate the final answer in streaming mode
-        combined_knowledge = generate_combined_summary(search_results, user_query, CHUNK_SIZE)
-        raw_data_text = format_raw_retrieved_data(search_results)
+        combined_knowledge = generate_combined_summary(retrieved_results, user_query, CHUNK_SIZE)
+        raw_data_text = format_raw_retrieved_data(retrieved_results)
         
         await websocket.send_text(combined_knowledge)
 
