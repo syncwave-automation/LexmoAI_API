@@ -5,6 +5,7 @@ import concurrent.futures
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Depends
 from typing import Optional
 import json
+import openai
 
 # We’ll reuse your pipeline functions from Lexmo_chat_stream.py
 from app.services.Lexmo_chat_stream import (
@@ -75,7 +76,7 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
 
     # 1) Verify the API key
     if not verify_api_key(api_key):
-        await websocket.send_json({"error": "Invalid or missing API key."})
+        await websocket.send_json({"event": "error", "type": "api_key_error", "message": "Invalid or missing API key."})
         await websocket.close()
         return
     
@@ -89,7 +90,7 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
         
         except Exception:
         # If the client forcibly closed or sent invalid JSON, break or handle as needed
-            await websocket.send_json({"error": "Invalid message format"})
+            await websocket.send_json({"event": "error", "type": "malformed_payload", "message": "JSON or message format is invalid."})
             continue
 
 
@@ -103,14 +104,29 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
             break
 
         if "query" not in data:
-            await websocket.send_json({"error": "No query provided"})
+            await websocket.send_json({"event": "error", "type": "empty_query", "message": "No query provided."})
             # await websocket.close()
             continue
 
+        event = data.get("event", None)
+        chat_session_id = data.get("chat_session_id", None)
+        message_id = data.get("message_id", None)   
         user_query = data["query"]
-        await websocket.send_text("[START_STREAM]")
+        start_stream = {
+            "event": "start_stream",
+            "chat_session_id": chat_session_id,
+            "message_id": message_id,
+            
+        }
+        
+        await websocket.send_json(start_stream)
         await asyncio.sleep(0)
-        await websocket.send_text("[START_RAW_FILES]")
+        start_raw_files = {
+            "event": "start_raw_files",
+            "chat_session_id": chat_session_id,
+            "message_id": message_id,
+        }
+        await websocket.send_json(start_raw_files)
         await asyncio.sleep(0)  
 
 # ---- Retrieval Phase: send each retrieved file as soon as available ----
@@ -146,31 +162,69 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
                     ])
                     # Build a JSON friendly structure for this retrieved file
                     item = {
+                        "message_id": message_id,
                         "store_name": store_name,
                         "filename": result.filename,
                         "content": [seg.text for seg in result.content],
                         "score": result.score
                     }
                     # Send each retrieved file immediately as JSON
-                    await websocket.send_json({"retrieved_file": item})
+                    await websocket.send_json({"event": "raw_file", "chat_session_id": chat_session_id, "message_id": message_id, "data": item})
                     await asyncio.sleep(0)
                     
+        end_raw_files = {
+            "event": "end_raw_files",
+            "chat_session_id": chat_session_id,
+            "message_id": message_id,
+        }
 
-
-        await websocket.send_text("[END_RAW_FILES]")
+        await websocket.send_json(end_raw_files)
         await asyncio.sleep(0)
         
-        await websocket.send_text("[START_PROCESSED_DATA]")
+        start_structured_data = {
+            "event": "start_structured_data",
+            "chat_session_id": chat_session_id,
+            "message_id": message_id,
+        }
+        
+        await websocket.send_json(start_structured_data)
         await asyncio.sleep(0)
         # 6) Now generate the final answer in streaming mode
-        combined_knowledge = generate_combined_summary(retrieved_results, user_query, CHUNK_SIZE)
+        
+        
+        
+        # combined_knowledge = generate_combined_summary(retrieved_results, user_query, CHUNK_SIZE)
         raw_data_text = format_raw_retrieved_data(retrieved_results)
+        combined_knowledge_arr = []
+        summary_prompt = build_summary_prompt(user_query, raw_data_text, CHUNK_SIZE)
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=summary_prompt,
+            stream=True
+        )
+        for chunk in response:
+            summary_piece = chunk.choices[0].delta.content
+            summary = {
+                "event": "processed_data_frame", 
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+                "data": summary_piece
+            }
+            if summary_piece:
+                # Only send if it's a non-empty string
+                combined_knowledge_arr.append(summary_piece)
+                await websocket.send_json(summary)
+                await asyncio.sleep(0)
         
-        await websocket.send_text(combined_knowledge)
-
-        await asyncio.sleep(0)
+        combined_knowledge = "".join(combined_knowledge_arr)
         
-        await websocket.send_text("[END_PROCESSED_DATA]")
+        end_structure_data = {
+            "event": "end_structured_data",
+            "chat_session_id": chat_session_id,
+            "message_id": message_id,
+        }
+        
+        await websocket.send_json(end_structure_data)
         await asyncio.sleep(0)
         # Instead of capturing the entire response, we'll forward each chunk as we get it:
         # We'll intercept the `client.chat.completions.create(..., stream=True)` calls
@@ -184,25 +238,50 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
 
         final_prompt = build_final_prompt(user_query, combined_knowledge, raw_data_text)
         # Now stream from openai
-        import openai
+
         response = openai.chat.completions.create(
             model="gpt-4o-mini",
             messages=final_prompt,
             stream=True
         )
+        
+        start_textual_response = {
+            "event": "start_response_stream",
+            "chat_session_id": chat_session_id,
+            "message_id": message_id,
+        }
 
         # 7) Send each chunk as text frames
-        await websocket.send_text("[START_RESPONSE_STREAM]")
+        await websocket.send_json(start_textual_response)
         for chunk in response:
             content_piece = chunk.choices[0].delta.content
+            response_data = {
+                "event": "response_frame", 
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+                "data": content_piece
+            }
             if content_piece:
             # Only send if it's a non-empty string
-                await websocket.send_text(content_piece)
+                await websocket.send_json(response_data)
                 await asyncio.sleep(0)
         
-        await websocket.send_text("[END_RESPONSE_STREAM]")
+        
+        end_textual_response = {
+            "event": "end_response_stream",
+            "chat_session_id": chat_session_id,
+            "message_id": message_id,
+        }
+        
+        await websocket.send_json(end_textual_response)
+        await asyncio.sleep(0)
 
-        await websocket.send_text("[END_STREAM]")
+        end_stream = {
+            "event": "end_stream",
+            "chat_session_id": chat_session_id,
+            "message_id": message_id,
+        }
+        await websocket.send_json(end_stream)
 
         # 8) Close or keep open if you want to allow multiple queries in one socket
         # We'll close for simplicity
@@ -212,6 +291,60 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
     #     print("Client disconnected")
     print("WebSocket session ended gracefully.")
     
+# --------------  HELPER FOR THE COMBINED SUMMARY  -------------------------
+summary_prompt_template = """
+You are given the following items:\n
+1. A user query: 
+
+"{user_query}"
+
+. A set of law-related information retrieved by a vector search (each entry has a filename and text snippet):\n
+Your task is to:\n
+- Read and understand all the law-related information provided.\n
+- Combine and reorganize the information into one clear, logically structured text.\n
+- Focus on clarity and factual accuracy.\n
+- Retain key legal references, definitions, or citations without adding your own commentary or speculation.\n
+- Do not add new information that is not in the provided materials.\n
+- Do not omit essential parts: the user wants a combined text, not a mere summary.\n
+- If multiple sources contain duplicate info, consolidate them.\n
+Format:\n
+Present your final output as a single coherent document, combining all important details. Avoid repetition.\n
+Important:\n
+Your response here will be passed to another language model along with the user’s original query. \n
+That model will generate the final answer to the user.\n
+Hence, your job is purely to compile, unify, and condense references.\n
+Output:\n
+A single, well-detailed, structured text containing the combined legal references.\n
+Maximum length of the output is 
+
+{max_output_tokens} 
+
+tokens.\n
+"""
+def build_summary_prompt(user_query, raw_data_text, CHUNK_SIZE):
+    # Build the combined summary of all relevant legal material
+    # Build the messages list used by openai.ChatCompletion
+    # Essentially replicates generate_final_response but doesn't print tokens
+    # so we can intercept them ourselves.
+
+    summary_user_text = summary_prompt_template.format(
+        user_query=user_query,
+        max_output_tokens=CHUNK_SIZE
+    )
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a helpful assistant."
+            )
+        },
+        {
+            "role": "user",
+            "content": summary_user_text + "\n" + raw_data_text
+        }
+    ]
+    return messages
 
 # --------------  HELPER FOR THE FINAL PROMPT  -------------------------
 main_llm_prompt_template = """
