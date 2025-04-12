@@ -29,10 +29,12 @@ LexmoAI_API/
 │   │   ├── chat.py          # Secure chat routes
 │   │   ├── chat_stream.py   # Secure chat streaming routes
 │   │   ├── public.py        # Public API routes
-│   │   └── secure.py        # Secure user routes
+│   │   ├── secure.py        # Secure user routes
+│   │   └── title.py         # Title generation routes
 │   └── services/  
 │       ├── Lexmo_chat_stream.py   # Main Lexmo Chat Streaming
-│       └── Lexmo_chat.py    # Main Lexmo Chat 
+│       ├── Lexmo_chat.py    # Main Lexmo Chat 
+│       └── Lexmo_title.py   # Main Lexmo Title Generator 
 ├── scripts/                 
 │   ├── create_api_key.py    # Create API key
 │   └── list_keys.py         # List all API Keys
@@ -127,6 +129,38 @@ curl -X GET https://api.lexmo.in/api/v1/secure/ \
     "role": "user"
   }
 }
+```
+
+**Unauthorized Response**:
+```json
+{"detail":"Invalid or inactive API key"}
+```
+### Title Endpoint  
+**Route**: `GET /api/v1/secure/title`  
+Requires a valid API key in the `X-API-Key` header.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/secure/title" \
+     -H "Content-Type: application/json" \
+     -H "X-API-Key: <VALID_USER_KEY>" \
+     -d '{"query": "Your legal question here"}'
+
+```
+###### Or 
+```bash
+curl -X POST "https://api.lexmo.in/api/v1/secure/chat" \
+     -H "Content-Type: application/json" \
+     -H "X-API-Key: <VALID_USER_KEY>" \
+     -d '{"query": "Your legal question here"}'
+
+```
+
+**Success Response**:
+```json
+{
+  "title": "YOUR TITLE"
+}
+
 ```
 
 **Unauthorized Response**:
