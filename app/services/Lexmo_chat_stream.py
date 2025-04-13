@@ -38,7 +38,7 @@ def search_vector_store(store_name, store_id, query, max_results):
         vector_store_id=store_id,
         query=query,
         max_num_results=max_results,
-        rewrite_query=True
+        rewrite_query=False
     )
     return store_name, response.data
 
