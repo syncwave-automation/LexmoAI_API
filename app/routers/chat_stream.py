@@ -6,12 +6,13 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Depends
 from typing import Optional
 import json
 import openai
+import re
 
 # We’ll reuse your pipeline functions from Lexmo_chat_stream.py
 from app.services.Lexmo_chat_stream import (
     search_vector_store,
     format_raw_retrieved_data,
-    generate_combined_summary,
+    classify_query,
 )
 
 # We also want your config values from Lexmo_chat_stream or define them here
@@ -111,7 +112,6 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
             await websocket.send_json({"event": "error", "type": "empty_query", "message": "No query provided."})
             # await websocket.close()
             continue
-
         event = data.get("event", None)
         chat_session_id = data.get("chat_session_id", None)
         message_id = data.get("message_id", None)   
@@ -125,207 +125,298 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
         
         await websocket.send_json(start_stream)
         await asyncio.sleep(0)
-        start_raw_files = {
-            "event": "start_raw_files",
-            "chat_session_id": chat_session_id,
-            "message_id": message_id,
-        }
-        await websocket.send_json(start_raw_files)
-        await asyncio.sleep(0)  
-
-# ---- Retrieval Phase: send each retrieved file as soon as available ----
-        retrieved_results = []  # Will hold raw results for later use in combined summary
-        seen_lengths = set()
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_map = {
-                executor.submit(parallel_search, store_name, store_id, user_query, MAX_RESULTS): store_name
-                for store_name, store_id in VECTOR_STORES.items()
-            }
-
-            # As soon as each future completes, process its results immediately.
-            for fut in concurrent.futures.as_completed(future_map):
-                store_name = future_map[fut]
-                try:
-                    store_name, results_data = fut.result()
-                except Exception:
-                    continue
-
-                filtered_data = [item for item in results_data if item.score >= RELEVANCE_SCORE_THRESHOLD]
-
-                for result in filtered_data:
-                    content_length = len(result.content[0].text)
-                    if content_length in seen_lengths:
-                        continue
-                    seen_lengths.add(content_length)
-                    # Save the raw result (keep the same format as before)
-                    retrieved_results.append([
-                        result.score,
-                        store_name,
-                        result.filename,
-                        result.content
-                    ])
-                    # Build a JSON friendly structure for this retrieved file
-                    item = {
-                        "message_id": message_id,
-                        "store_name": store_name,
-                        "filename": result.filename,
-                        "content": [seg.text for seg in result.content],
-                        "score": result.score
-                    }
-                    # Send each retrieved file immediately as JSON
-                    await websocket.send_json({"event": "raw_file", "chat_session_id": chat_session_id, "message_id": message_id, "data": item})
-                    await asyncio.sleep(0)
-                    
-        end_raw_files = {
-            "event": "end_raw_files",
-            "chat_session_id": chat_session_id,
-            "message_id": message_id,
-        }
-
-        await websocket.send_json(end_raw_files)
-        await asyncio.sleep(0)
         
-        start_structured_data = {
-            "event": "start_structured_data",
-            "chat_session_id": chat_session_id,
-            "message_id": message_id,
-        }
+        query_type = classify_query(user_query)
         
-        await websocket.send_json(start_structured_data)
-        await asyncio.sleep(0)
-        # 6) Now generate the final answer in streaming mode
-        
-        
-        
-        # combined_knowledge = generate_combined_summary(retrieved_results, user_query, CHUNK_SIZE)
-        raw_data_text = format_raw_retrieved_data(retrieved_results)
-        combined_knowledge_arr = []
-        summary_prompt = build_summary_prompt(user_query, raw_data_text, CHUNK_SIZE)
-        response = openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=summary_prompt,
-            stream=True
-        )
-        for chunk in response:
-            summary_piece = chunk.choices[0].delta.content
-            summary = {
-                "event": "processed_data_frame", 
+        if query_type == "simple":
+            simple_promt = f"""
+            user query: {user_query}
+            You are LexmoAI, a legal assistant developed by Syncwave Automation Pvt Ltd.
+            The user has previously discussed or shared certain information. Here is a concise summary of the conversation so far (the “context block”):
+            "{context_block}"
+            """
+            messages = [
+                {"role": "system", "content": SYSTEM_MESSAGE_SIMPLE},
+                {"role": "user", "content": simple_promt}
+            ]
+            
+            response = openai.responses.create(
+                model="gpt-4o-mini",
+                input=messages,
+                stream=True,
+                max_output_tokens=500
+            )
+            start_textual_response = {
+                "event": "start_response_stream",
                 "chat_session_id": chat_session_id,
                 "message_id": message_id,
-                "data": summary_piece
             }
-            if summary_piece:
-                # Only send if it's a non-empty string
-                combined_knowledge_arr.append(summary_piece)
-                await websocket.send_json(summary)
-                await asyncio.sleep(0)
-        
-        combined_knowledge = "".join(combined_knowledge_arr)
-        
-        end_structure_data = {
-            "event": "end_structured_data",
-            "chat_session_id": chat_session_id,
-            "message_id": message_id,
-        }
-        
-        await websocket.send_json(end_structure_data)
-        await asyncio.sleep(0)
-        # Instead of capturing the entire response, we'll forward each chunk as we get it:
-        # We'll intercept the `client.chat.completions.create(..., stream=True)` calls
-        # inside generate_final_response. That function prints to stdout now,
-        # but we want to *send them to the websocket*.
-        # So we'll create an alternative version that yields chunks, or we can monkey-patch.
+            await websocket.send_json(start_textual_response)
+            await asyncio.sleep(0)
+            
+            final_response = ""
+            for chunk in response:
+                # Look for the streaming text events
+                if chunk.type == "response.output_text.delta":
+                    # `chunk.delta` should contain the piece of text
+                    content_piece = chunk.delta
+                    final_response += chunk.delta
+                    response_data = {
+                        "event": "response_frame", 
+                        "chat_session_id": chat_session_id,
+                        "message_id": message_id,
+                        "data": content_piece
+                    }
+                    if content_piece:
+                    # Only send if it's a non-empty string
+                        await websocket.send_json(response_data)
+                        await asyncio.sleep(0)
+            end_textual_response = {
+                "event": "end_response_stream",
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+            }
+            
+            await websocket.send_json(end_textual_response)
+            await asyncio.sleep(0)
+            
+            start_context = {
+                "event": "start_context",
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+            }
+            await websocket.send_json(start_context)
+            await asyncio.sleep(0)
+            
+            context_block = update_context_block(context_block, user_query, final_response)
 
-        # Easiest solution: We'll replicate the final logic here, but we won't
-        # call the existing generate_final_response function directly, because
-        # it prints tokens. We'll re-implement that part so we can send them via websocket.
-        
+            context_block_json = {
+                "event": "context_block",
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+                "data": context_block
+            }
+            await websocket.send_json(context_block_json)
+            await asyncio.sleep(0)
+            
+            
+            end_context = {
+                "event": "end_context",
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+            }
+            await websocket.send_json(end_context) 
+            await asyncio.sleep(0)
+            
+            end_stream = {
+                "event": "end_stream",
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+            }
+            await websocket.send_json(end_stream)
+                
+        else:
+            start_raw_files = {
+                "event": "start_raw_files",
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+            }
+            await websocket.send_json(start_raw_files)
+            await asyncio.sleep(0)  
 
-        final_prompt = build_final_prompt(user_query, combined_knowledge, raw_data_text, context_block)
-        # Now stream from openai
+    # ---- Retrieval Phase: send each retrieved file as soon as available ----
+            retrieved_results = []  # Will hold raw results for later use in combined summary
+            seen_lengths = set()
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future_map = {
+                    executor.submit(parallel_search, store_name, store_id, user_query, MAX_RESULTS): store_name
+                    for store_name, store_id in VECTOR_STORES.items()
+                }
 
-        response = openai.responses.create(
-            model="gpt-4o-mini",
-            input=final_prompt,
-            stream=True,
-            # previous_response_id=current_response_id
-        )
-        
-        start_textual_response = {
-            "event": "start_response_stream",
-            "chat_session_id": chat_session_id,
-            "message_id": message_id,
-        }
+                # As soon as each future completes, process its results immediately.
+                for fut in concurrent.futures.as_completed(future_map):
+                    store_name = future_map[fut]
+                    try:
+                        store_name, results_data = fut.result()
+                    except Exception:
+                        continue
 
-        # 7) Send each chunk as text frames
-        await websocket.send_json(start_textual_response)
-        
-        final_response = ""
-        
-        for chunk in response:
-            # if chunk.type == "response.created":
-            # `chunk.delta` should contain the piece of text
-                # print(chunk.response.id, end='', flush=True)
-                # current_response_id = chunk.response.id
-            # Look for the streaming text events
-            if chunk.type == "response.output_text.delta":
-                # `chunk.delta` should contain the piece of text
-                content_piece = chunk.delta
-                final_response += chunk.delta
-                response_data = {
-                    "event": "response_frame", 
+                    filtered_data = [item for item in results_data if item.score >= RELEVANCE_SCORE_THRESHOLD]
+
+                    for result in filtered_data:
+                        content_length = len(result.content[0].text)
+                        if content_length in seen_lengths:
+                            continue
+                        seen_lengths.add(content_length)
+                        # Save the raw result (keep the same format as before)
+                        retrieved_results.append([
+                            result.score,
+                            store_name,
+                            result.filename,
+                            result.content
+                        ])
+                        # Build a JSON friendly structure for this retrieved file
+                        item = {
+                            "message_id": message_id,
+                            "store_name": store_name,
+                            "filename": result.filename,
+                            "content": [seg.text for seg in result.content],
+                            "score": result.score
+                        }
+                        # Send each retrieved file immediately as JSON
+                        await websocket.send_json({"event": "raw_file", "chat_session_id": chat_session_id, "message_id": message_id, "data": item})
+                        await asyncio.sleep(0)
+                        
+            end_raw_files = {
+                "event": "end_raw_files",
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+            }
+
+            await websocket.send_json(end_raw_files)
+            await asyncio.sleep(0)
+            
+            start_structured_data = {
+                "event": "start_structured_data",
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+            }
+            
+            await websocket.send_json(start_structured_data)
+            await asyncio.sleep(0)
+            # 6) Now generate the final answer in streaming mode
+            
+            
+            
+            raw_data_text = format_raw_retrieved_data(retrieved_results)
+            combined_knowledge_arr = []
+            summary_prompt = build_summary_prompt(user_query, raw_data_text, CHUNK_SIZE)
+            response = openai.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=summary_prompt,
+                stream=True
+            )
+            for chunk in response:
+                summary_piece = chunk.choices[0].delta.content
+                summary = {
+                    "event": "processed_data_frame", 
                     "chat_session_id": chat_session_id,
                     "message_id": message_id,
-                    "data": content_piece
+                    "data": summary_piece
                 }
-                if content_piece:
-                # Only send if it's a non-empty string
-                    await websocket.send_json(response_data)
+                if summary_piece:
+                    # Only send if it's a non-empty string
+                    combined_knowledge_arr.append(summary_piece)
+                    await websocket.send_json(summary)
                     await asyncio.sleep(0)
-        
-        end_textual_response = {
-            "event": "end_response_stream",
-            "chat_session_id": chat_session_id,
-            "message_id": message_id,
-        }
-        
-        await websocket.send_json(end_textual_response)
-        await asyncio.sleep(0)
-        
-        start_context = {
-            "event": "start_context",
-            "chat_session_id": chat_session_id,
-            "message_id": message_id,
-        }
-        await websocket.send_json(start_context)
-        await asyncio.sleep(0)
-        
-        context_block = update_context_block(context_block, user_query, final_response)
+            
+            combined_knowledge = "".join(combined_knowledge_arr)
+            
+            end_structure_data = {
+                "event": "end_structured_data",
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+            }
+            
+            await websocket.send_json(end_structure_data)
+            await asyncio.sleep(0)
+            # Instead of capturing the entire response, we'll forward each chunk as we get it:
+            # We'll intercept the `client.chat.completions.create(..., stream=True)` calls
+            # inside generate_final_response. That function prints to stdout now,
+            # but we want to *send them to the websocket*.
+            # So we'll create an alternative version that yields chunks, or we can monkey-patch.
 
-        context_block_json = {
-            "event": "context_block",
-            "chat_session_id": chat_session_id,
-            "message_id": message_id,
-            "data": context_block
-        }
-        await websocket.send_json(context_block_json)
-        await asyncio.sleep(0)
-        
-        
-        end_context = {
-            "event": "end_context",
-            "chat_session_id": chat_session_id,
-            "message_id": message_id,
-        }
-        await websocket.send_json(end_context) 
-        await asyncio.sleep(0)
-        
-        end_stream = {
-            "event": "end_stream",
-            "chat_session_id": chat_session_id,
-            "message_id": message_id,
-        }
-        await websocket.send_json(end_stream)
+            # Easiest solution: We'll replicate the final logic here, but we won't
+            # call the existing generate_final_response function directly, because
+            # it prints tokens. We'll re-implement that part so we can send them via websocket.
+            
+
+            final_prompt = build_final_prompt(user_query, combined_knowledge, raw_data_text, context_block)
+            # Now stream from openai
+
+            response = openai.responses.create(
+                model="gpt-4o-mini",
+                input=final_prompt,
+                stream=True,
+                # previous_response_id=current_response_id
+            )
+            
+            start_textual_response = {
+                "event": "start_response_stream",
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+            }
+
+            # 7) Send each chunk as text frames
+            await websocket.send_json(start_textual_response)
+            await asyncio.sleep(0)
+            
+            final_response = ""
+            
+            for chunk in response:
+                # if chunk.type == "response.created":
+                # `chunk.delta` should contain the piece of text
+                    # print(chunk.response.id, end='', flush=True)
+                    # current_response_id = chunk.response.id
+                # Look for the streaming text events
+                if chunk.type == "response.output_text.delta":
+                    # `chunk.delta` should contain the piece of text
+                    content_piece = chunk.delta
+                    final_response += chunk.delta
+                    response_data = {
+                        "event": "response_frame", 
+                        "chat_session_id": chat_session_id,
+                        "message_id": message_id,
+                        "data": content_piece
+                    }
+                    if content_piece:
+                    # Only send if it's a non-empty string
+                        await websocket.send_json(response_data)
+                        await asyncio.sleep(0)
+            
+            end_textual_response = {
+                "event": "end_response_stream",
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+            }
+            
+            await websocket.send_json(end_textual_response)
+            await asyncio.sleep(0)
+            
+            start_context = {
+                "event": "start_context",
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+            }
+            await websocket.send_json(start_context)
+            await asyncio.sleep(0)
+            
+            context_block = update_context_block(context_block, user_query, final_response)
+
+            context_block_json = {
+                "event": "context_block",
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+                "data": context_block
+            }
+            await websocket.send_json(context_block_json)
+            await asyncio.sleep(0)
+            
+            
+            end_context = {
+                "event": "end_context",
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+            }
+            await websocket.send_json(end_context) 
+            await asyncio.sleep(0)
+            
+            end_stream = {
+                "event": "end_stream",
+                "chat_session_id": chat_session_id,
+                "message_id": message_id,
+            }
+            await websocket.send_json(end_stream)
 
         # 8) Close or keep open if you want to allow multiple queries in one socket
         # We'll close for simplicity
@@ -392,7 +483,12 @@ def build_summary_prompt(user_query, raw_data_text, CHUNK_SIZE):
 
 # --------------  HELPER FOR THE FINAL PROMPT  -------------------------
 main_llm_prompt_template = """
-You are a compassionate, empathetic legal assistant. The user’s question is:
+You are a compassionate, empathetic legal assistant. 
+
+The user has previously discussed or shared certain information. Here is a concise summary of the conversation so far (the “context block”):
+"{context_block}"
+
+The user’s question is:
 "{user_query}"
 
 You have a combined set of legal knowledge (cited from various sources), 
@@ -428,22 +524,17 @@ def build_final_prompt(user_query, combined_knowledge, raw_data_text, context_bl
 
     final_user_text = main_llm_prompt_template.format(
         user_query=user_query,
-        raw_data=raw_data_text
+        raw_data=raw_data_text,
+        context_block=context_block
     ) + (
         "\n\nHere is the combined summary of all relevant legal material you can reference:\n"
         + combined_knowledge
-    ) + (
-        "\n Here is the context history of previus conversations if any:\n"
-        + context_block
-    )
+    ) 
 
     messages = [
         {
             "role": "system",
-            "content": (
-                "You are a legal assistant providing comprehensive, empathetic responses. "
-                "Do not reveal or mention specific filenames or store references."
-            )
+            "content": SYSTEM_MESSAGE_LEGAL
         },
         {
             "role": "user",
@@ -455,7 +546,32 @@ def build_final_prompt(user_query, combined_knowledge, raw_data_text, context_bl
 
 def update_context_block(previous_context, user_query, assistant_answer):
     summary_prompt = f"""
-You are a helper that keeps track of important context for a conversation.
+You are a legal summarization assistant for a public-facing AI bot that provides basic legal assistance to the general population in India.
+
+Your task is to maintain an up-to-date summary of a user's legal query and the assistant’s responses across an ongoing conversation. 
+This summary acts as the "memory" of the conversation. 
+It should be continuously refined after every interaction to ensure that essential context is preserved for future turns.
+
+Here’s what you have:
+1. A **previous context summary** that includes key legal issues, facts, and assistant suggestions so far.
+2. A **new user query** from the latest message in the conversation.
+3. A **new assistant response** that addresses the user’s query based on relevant laws and regulations.
+
+Your job is to generate a **new updated context summary** that:
+- Retains **key facts** shared by the user (e.g., names of parties, location, relationships, issues, relevant dates, events, intentions).
+- Captures any **legal context or advice** provided so far, including references to acts, sections, legal terms, or processes.
+- Ensures that **prior suggestions, warnings, or disclaimers** are preserved if still relevant.
+- Condenses the information into a coherent, logically flowing, and concise narrative.
+- Omits small talk, repeated explanations, irrelevant filler, or emotional reassurances unless contextually critical.
+- Is **factual, neutral, and non-speculative** – do not add new information beyond what was said.
+
+This context summary will be sent to the assistant on the next turn to keep the conversation coherent and contextually aware.
+
+Format:
+Return ONLY the new, updated context summary as a plain text paragraph (no bullet points, no labels, no quotes). Do not include headings, explanations, or introductory text. Just the final summary.
+
+Here is the information you need to summarize:
+
 Existing summary:
 \"\"\"{previous_context}\"\"\"
 
@@ -465,11 +581,7 @@ New user query:
 Assistant answer:
 \"\"\"{assistant_answer}\"\"\"
 
-Update the summary so it retains the key information from everything so far,
-omitting unimportant details, and ensuring the final summary is concise yet
-comprehensive enough to maintain context in future queries.
-Only keep essential facts, user preferences, or background details.
-Do NOT exceed 200-300 tokens in total.
+Now return the updated context summary:
 """
     response = openai.chat.completions.create(
         model="gpt-4o-mini",
@@ -477,8 +589,25 @@ Do NOT exceed 200-300 tokens in total.
             {"role": "system", "content": "You are a helpful system that updates conversation summaries."},
             {"role": "user", "content": summary_prompt},
         ],
-        max_tokens=3000,
+        max_tokens=16000,
         temperature=0.0
     )
     new_summary = response.choices[0].message.content
     return new_summary
+
+
+# Update system messages to include proper branding
+SYSTEM_MESSAGE_LEGAL = """
+You are LexmoAI, a legal assistant developed by Syncwave Automation Pvt Ltd. 
+You provide comprehensive, empathetic legal responses based on Indian law.
+Always refer to yourself as LexmoAI when necessary.
+Do not reveal or mention specific filenames or store references.
+"""
+
+SYSTEM_MESSAGE_SIMPLE = """
+You are LexmoAI, a helpful legal assistant developed by Syncwave Automation Pvt Ltd.
+For questions that seem legal in nature, provide general guidance based on your knowledge.
+For non-legal questions, be helpful but remind users that your specialty is legal assistance.
+Always identify yourself as LexmoAI from Syncwave Automation Pvt Ltd if asked about your identity.
+Never mention OpenAI, GPT, or any other AI company or model in your responses.
+"""

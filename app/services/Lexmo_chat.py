@@ -5,6 +5,8 @@ import openai
 import concurrent.futures
 from tqdm import tqdm
 from dotenv import load_dotenv
+import re
+
 
 load_dotenv()
 
@@ -14,6 +16,59 @@ client = openai  # alias for clarity
 
 search_results = []
 seen_lengths = set()
+
+
+def classify_query(query, classification_threshold=0.7):
+    """
+    Classifies a query as either requiring the full legal pipeline or a simple LLM response.
+    
+    Args:
+        query (str): User's query text
+        classification_threshold (float): Confidence threshold for legal classification
+    
+    Returns:
+        str: "legal" or "simple"
+    """
+    # Simple heuristics first - check for legal keywords to quickly classify obvious legal queries
+    legal_keywords = [
+        'law', 'legal', 'court', 'rights', 'divorce', 'marriage', 'custody', 
+        'property', 'lawyer', 'attorney', 'sue', 'lawsuit', 'contract', 'crime',
+        'criminal', 'plaintiff', 'defendant', 'judge', 'statute', 'regulation',
+        'act', 'section', 'provision', 'clause', 'appeal', 'tribunal', 'hearing',
+        'prosecution', 'bail', 'sentence', 'liability', 'tenant', 'landlord',
+        'compensation', 'damages', 'claim', 'settlement'
+    ]
+    
+    # Check for legal keywords in query (case insensitive)
+    query_lower = query.lower()
+    for keyword in legal_keywords:
+        # Match whole words only
+        if re.search(r'\b' + keyword + r'\b', query_lower):
+            return "legal"
+    
+    # For ambiguous queries, use the LLM to classify
+    prompt = f"""Classify the following user query as either "legal" (requiring legal knowledge and references) 
+    or "simple" (general conversation or non-legal question). Reply with ONLY "legal" or "simple".
+    
+    User query: {query}
+    
+    Classification:"""
+    
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a query classifier that determines if a query requires legal expertise."},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=10,
+        temperature=0.1
+    )
+    
+    classification = response.choices[0].message.content.strip().lower()
+    
+    # Return "legal" if the classification contains the word "legal", otherwise "simple"
+    return "legal" if "legal" in classification else "simple"
+
 
 def search_vector_store(store_name, store_id, query, max_results):
     """
