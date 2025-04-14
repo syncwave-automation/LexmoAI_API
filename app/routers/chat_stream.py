@@ -243,7 +243,7 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
             model="gpt-4o-mini",
             input=final_prompt,
             stream=True,
-            previous_response_id=current_response_id
+            # previous_response_id=current_response_id
         )
         
         start_textual_response = {
@@ -255,10 +255,10 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
         # 7) Send each chunk as text frames
         await websocket.send_json(start_textual_response)
         for chunk in response:
-            if chunk.type == "response.created":
+            # if chunk.type == "response.created":
             # `chunk.delta` should contain the piece of text
                 # print(chunk.response.id, end='', flush=True)
-                current_response_id = chunk.response.id
+                # current_response_id = chunk.response.id
             # Look for the streaming text events
             if chunk.type == "response.output_text.delta":
                 # `chunk.delta` should contain the piece of text
