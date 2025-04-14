@@ -58,6 +58,8 @@ def parallel_search(name, store_id, q, max_results):
     return search_vector_store(name, store_id, q, max_results)
 
 
+
+
 # --------------  THE WEBSOCKET ROUTE  ---------------------------
 router = APIRouter()
 
@@ -79,6 +81,8 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
         await websocket.send_json({"event": "error", "type": "api_key_error", "message": "Invalid or missing API key."})
         await websocket.close()
         return
+    
+    context_block = ""
     
     while True:
         try:
@@ -235,8 +239,9 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
         # Easiest solution: We'll replicate the final logic here, but we won't
         # call the existing generate_final_response function directly, because
         # it prints tokens. We'll re-implement that part so we can send them via websocket.
+        
 
-        final_prompt = build_final_prompt(user_query, combined_knowledge, raw_data_text)
+        final_prompt = build_final_prompt(user_query, combined_knowledge, raw_data_text, context_block)
         # Now stream from openai
 
         response = openai.responses.create(
@@ -254,6 +259,9 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
 
         # 7) Send each chunk as text frames
         await websocket.send_json(start_textual_response)
+        
+        final_response = ""
+        
         for chunk in response:
             # if chunk.type == "response.created":
             # `chunk.delta` should contain the piece of text
@@ -263,6 +271,7 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
             if chunk.type == "response.output_text.delta":
                 # `chunk.delta` should contain the piece of text
                 content_piece = chunk.delta
+                final_response += chunk.delta
                 response_data = {
                     "event": "response_frame", 
                     "chat_session_id": chat_session_id,
@@ -274,7 +283,6 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
                     await websocket.send_json(response_data)
                     await asyncio.sleep(0)
         
-        
         end_textual_response = {
             "event": "end_response_stream",
             "chat_session_id": chat_session_id,
@@ -283,7 +291,35 @@ async def chat_stream_endpoint(websocket: WebSocket, api_key: Optional[str] = Qu
         
         await websocket.send_json(end_textual_response)
         await asyncio.sleep(0)
+        
+        start_context = {
+            "event": "start_context",
+            "chat_session_id": chat_session_id,
+            "message_id": message_id,
+        }
+        await websocket.send_json(start_context)
+        await asyncio.sleep(0)
+        
+        context_block = update_context_block(context_block, user_query, final_response)
 
+        context_block_json = {
+            "event": "context_block",
+            "chat_session_id": chat_session_id,
+            "message_id": message_id,
+            "data": context_block
+        }
+        await websocket.send_json(context_block_json)
+        await asyncio.sleep(0)
+        
+        
+        end_context = {
+            "event": "end_context",
+            "chat_session_id": chat_session_id,
+            "message_id": message_id,
+        }
+        await websocket.send_json(end_context) 
+        await asyncio.sleep(0)
+        
         end_stream = {
             "event": "end_stream",
             "chat_session_id": chat_session_id,
@@ -385,7 +421,7 @@ Remember:
 - Maintain a warm, helpful tone.
 """
 
-def build_final_prompt(user_query, combined_knowledge, raw_data_text):
+def build_final_prompt(user_query, combined_knowledge, raw_data_text, context_block):
     # Build the messages list used by openai.ChatCompletion
     # Essentially replicates generate_final_response but doesn't print tokens
     # so we can intercept them ourselves.
@@ -396,6 +432,9 @@ def build_final_prompt(user_query, combined_knowledge, raw_data_text):
     ) + (
         "\n\nHere is the combined summary of all relevant legal material you can reference:\n"
         + combined_knowledge
+    ) + (
+        "\n Here is the context history of previus conversations if any:\n"
+        + context_block
     )
 
     messages = [
@@ -412,3 +451,34 @@ def build_final_prompt(user_query, combined_knowledge, raw_data_text):
         }
     ]
     return messages
+
+
+def update_context_block(previous_context, user_query, assistant_answer):
+    summary_prompt = f"""
+You are a helper that keeps track of important context for a conversation.
+Existing summary:
+\"\"\"{previous_context}\"\"\"
+
+New user query:
+\"\"\"{user_query}\"\"\"
+
+Assistant answer:
+\"\"\"{assistant_answer}\"\"\"
+
+Update the summary so it retains the key information from everything so far,
+omitting unimportant details, and ensuring the final summary is concise yet
+comprehensive enough to maintain context in future queries.
+Only keep essential facts, user preferences, or background details.
+Do NOT exceed 200-300 tokens in total.
+"""
+    response = openai.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a helpful system that updates conversation summaries."},
+            {"role": "user", "content": summary_prompt},
+        ],
+        max_tokens=3000,
+        temperature=0.0
+    )
+    new_summary = response.choices[0].message.content
+    return new_summary
