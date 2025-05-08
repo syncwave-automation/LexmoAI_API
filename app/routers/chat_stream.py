@@ -17,8 +17,8 @@ from app.services.Lexmo_chat_stream import (
 
 # We also want your config values from Lexmo_chat_stream or define them here
 VECTOR_STORES = {
-    "State_Acts": "vs_67e99fa07b488191834d5a49905b414f",
-    "Union_Acts": "vs_67e99e7010c081918f81a5b784b5bd6d"
+    "State_Acts": "vs_681c730c32d481918ccf591973da0ad0",
+    "Union_Acts": "vs_681c6e440e088191a2f95c4ea0cd7eba"
 }
 RELEVANCE_SCORE_THRESHOLD = 0.2
 MAX_RESULTS = 4
